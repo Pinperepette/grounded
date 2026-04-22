@@ -1,0 +1,31 @@
+{
+  "name": "@ccplug/grounded",
+  "version": "0.1.0",
+  "description": "Claude Code hooks that enforce tool usage, prevent hallucinations and protect your codebase",
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "bin": {
+    "grounded": "dist/bin/install.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "postinstall": "node dist/bin/install.js --auto || true",
+    "test": "tsc && node dist/test/harness.js"
+  },
+  "keywords": [
+    "claude-code",
+    "ccplug",
+    "hooks",
+    "hallucination",
+    "enforcement"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.19.39",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
