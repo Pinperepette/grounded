@@ -19,6 +19,10 @@
     "hallucination",
     "enforcement"
   ],
+  "files": [
+    "dist",
+    "!dist/test"
+  ],
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.19.39",
