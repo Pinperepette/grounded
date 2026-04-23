@@ -1,5 +1,5 @@
 {
-  "name": "@ccplug/grounded",
+  "name": "@pinperepette/grounded",
   "version": "0.1.0",
   "description": "Claude Code hooks that enforce tool usage, prevent hallucinations and protect your codebase",
   "type": "commonjs",
@@ -15,7 +15,6 @@
   },
   "keywords": [
     "claude-code",
-    "ccplug",
     "hooks",
     "hallucination",
     "enforcement"

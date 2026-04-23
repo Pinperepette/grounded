@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * CLI for @ccplug/grounded.
+ * CLI for @pinperepette/grounded.
  *
  * grounded install    — add hooks to ~/.claude/settings.json
  * grounded uninstall  — remove grounded hooks
@@ -15,7 +15,7 @@ import { findProjectRoot } from "../utils.js";
 import { getBehaviorLevel, getMentalState } from "../scoring.js";
 
 const SETTINGS_PATH = join(process.env.HOME ?? "/tmp", ".claude", "settings.json");
-const HOOK_TAG = "@ccplug/grounded";
+const HOOK_TAG = "@pinperepette/grounded";
 
 function distDir(): string {
   return resolve(__dirname, "..", "hooks");
@@ -86,12 +86,12 @@ function removeGrounded(s: Settings): Settings {
 function install(auto = false): void {
   const s = loadSettings();
   saveSettings(addGrounded(removeGrounded(s)));
-  if (!auto) console.log(`✓ @ccplug/grounded installed → ${SETTINGS_PATH}`);
+  if (!auto) console.log(`✓ @pinperepette/grounded installed → ${SETTINGS_PATH}`);
 }
 
 function uninstall(): void {
   saveSettings(removeGrounded(loadSettings()));
-  console.log(`✓ @ccplug/grounded removed from ${SETTINGS_PATH}`);
+  console.log(`✓ @pinperepette/grounded removed from ${SETTINGS_PATH}`);
 }
 
 function status(): void {
@@ -99,13 +99,13 @@ function status(): void {
   let found = 0;
   for (const entries of Object.values(hooks)) found += entries.filter(isGrounded).length;
   if (found > 0) {
-    console.log(`✓ @ccplug/grounded: ${found} hooks active\n`);
+    console.log(`✓ @pinperepette/grounded: ${found} hooks active\n`);
     for (const d of HOOK_DEFS) {
       const matcher = d.matcher ? ` / ${d.matcher}` : "";
       console.log(`  [${d.event}${matcher}]  ${d.cmd}`);
     }
   } else {
-    console.log(`✗ @ccplug/grounded not installed. Run: grounded install`);
+    console.log(`✗ @pinperepette/grounded not installed. Run: grounded install`);
   }
 }
 

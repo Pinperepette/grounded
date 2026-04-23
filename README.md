@@ -96,7 +96,7 @@ When behavior is enforced:
 ## Install
 
 ```bash
-npm install -g @ccplug/grounded
+npm install -g @pinperepette/grounded
 grounded install
 ```
 
