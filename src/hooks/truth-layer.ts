@@ -9,7 +9,7 @@
  * Both branches feed the session state used by anti-bypass and edit-guard.
  */
 import { loadState, saveState, logDecision } from "../state.js";
-import { readStdin } from "../utils.js";
+import { postOk, readStdin, superviseHook } from "../utils.js";
 import { loadConfig } from "../config.js";
 
 const EMPTY_THRESHOLD = 15;
@@ -93,4 +93,4 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(() => process.exit(1));
+superviseHook("truth-layer", main, postOk);

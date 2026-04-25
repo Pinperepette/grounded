@@ -7,7 +7,7 @@
  * 2. Extracts code identifiers from the user's prompt and suggests
  *    specific Grep queries — before the model starts answering.
  */
-import { findProjectRoot, readClaudeMd, readStdin } from "../utils.js";
+import { findProjectRoot, postOk, readClaudeMd, readStdin, superviseHook } from "../utils.js";
 import { loadConfig } from "../config.js";
 
 const ENFORCEMENT_RULES = `\
@@ -101,4 +101,4 @@ async function main(): Promise<void> {
   );
 }
 
-main().catch(() => process.exit(1));
+superviseHook("prompt-inject", main, postOk);

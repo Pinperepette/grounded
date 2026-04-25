@@ -371,6 +371,64 @@ test("injects LOOP warning at threshold (3rd identical call)", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// supervisor (fail-open contract)
+// ─────────────────────────────────────────────────────────────────────────────
+console.log(`\n${BOLD}supervisor${RESET}`);
+
+function runHookRaw(hook: string, rawInput: string, errorLog?: string): {
+  exitCode: number; stdout: string; stderr: string;
+} {
+  const result = spawnSync("node", [join(HOOKS_DIR, `${hook}.js`)], {
+    input:    rawInput,
+    env:      {
+      ...process.env,
+      GROUNDED_STATE_FILE: stateFile("sup"),
+      ...(errorLog ? { GROUNDED_ERROR_LOG: errorLog } : {}),
+    },
+    encoding: "utf-8",
+    timeout:  8000,
+  });
+  return {
+    exitCode: result.status ?? -1,
+    stdout:   result.stdout,
+    stderr:   result.stderr,
+  };
+}
+
+test("PreToolUse hook fails open with approve on malformed JSON input", () => {
+  writeState("sup", emptyState());
+  const r = runHookRaw("anti-bypass", "{not valid json");
+  eq(r.exitCode, 0, "exit code (must be 0 — non-zero may be surfaced as block)");
+  const parsed = JSON.parse(r.stdout) as { decision?: string };
+  eq(parsed.decision, "approve", "fail-open response");
+});
+
+test("PostToolUse hook fails open with continue:true on malformed JSON input", () => {
+  writeState("sup", emptyState());
+  const r = runHookRaw("read-tracker", "garbage~~");
+  eq(r.exitCode, 0, "exit code");
+  const parsed = JSON.parse(r.stdout) as { continue?: boolean };
+  eq(parsed.continue, true, "fail-open response");
+});
+
+test("Stop hook fails open with approve on malformed JSON input", () => {
+  writeState("sup", emptyState());
+  const r = runHookRaw("confidence-check", "}}}");
+  eq(r.exitCode, 0, "exit code");
+  const parsed = JSON.parse(r.stdout) as { decision?: string };
+  eq(parsed.decision, "approve", "fail-open response");
+});
+
+test("supervisor logs the crash to GROUNDED_ERROR_LOG", () => {
+  writeState("sup", emptyState());
+  const logPath = join(TMP, "errors.log");
+  runHookRaw("anti-bypass", "<<not json>>", logPath);
+  const log = readFileSync(logPath, "utf-8");
+  ok(log.includes("anti-bypass"), "error log should record hook name");
+  ok(/JSON|Unexpected/i.test(log), "error log should describe parse failure");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Summary
 // ─────────────────────────────────────────────────────────────────────────────
 const total = passed + failed;

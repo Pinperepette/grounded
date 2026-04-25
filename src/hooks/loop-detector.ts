@@ -7,7 +7,7 @@
  * the threshold drops from 3 to 1.
  */
 import { loadState, saveState, logDecision, loadMemory, saveMemory } from "../state.js";
-import { readStdin, simpleHash } from "../utils.js";
+import { postOk, readStdin, simpleHash, superviseHook } from "../utils.js";
 import { loadConfig } from "../config.js";
 import { recordEvent, getSessionScore } from "../scoring.js";
 
@@ -119,4 +119,4 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(() => process.exit(1));
+superviseHook("loop-detector", main, postOk);

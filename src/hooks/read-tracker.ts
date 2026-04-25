@@ -5,7 +5,7 @@
  */
 import { existsSync } from "fs";
 import { loadState, saveState, logDecision } from "../state.js";
-import { postOk, readStdin, simpleHash } from "../utils.js";
+import { postOk, readStdin, simpleHash, superviseHook } from "../utils.js";
 import { recordEvent } from "../scoring.js";
 
 async function main(): Promise<void> {
@@ -55,4 +55,4 @@ async function main(): Promise<void> {
   postOk();
 }
 
-main().catch(() => process.exit(1));
+superviseHook("read-tracker", main, postOk);
