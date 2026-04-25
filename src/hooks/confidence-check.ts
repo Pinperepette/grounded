@@ -80,74 +80,86 @@ function extractClaims(text: string): string[] {
 }
 
 // ─── Codebase verification ────────────────────────────────────────────────────
-// Tri-state cache: null = untested, true = available, false = missing.
-// Memoised across calls within the same hook invocation to avoid repeated ENOENTs
-// when verifying many identifiers in parallel.
 
-let rgAvailable: boolean | null = null;
-let grepAvailable: boolean | null = null;
+type Backend = "rg" | "grep" | "none";
 
-async function searchViaRg(identifier: string, root: string): Promise<boolean | null> {
+// Probe each backend ONCE before the parallel verification fan-out, so we
+// don't spawn N concurrent rg processes that all ENOENT and then spawn N more
+// grep processes on systems without ripgrep.
+async function detectBackend(): Promise<Backend> {
+  const probe = async (cmd: string): Promise<boolean> => {
+    try {
+      await execFileAsync(cmd, ["--version"], { timeout: 2000 });
+      return true;
+    } catch (e) {
+      const err = e as ExecFileException & { code?: number | string };
+      // ENOENT = command not installed; any other failure means it exists
+      // but errored out for unrelated reasons — still considered available.
+      return err.code !== "ENOENT";
+    }
+  };
+  if (await probe("rg"))   return "rg";
+  if (await probe("grep")) return "grep";
+  return "none";
+}
+
+// Directories that are useless to search and would blow the 5s timeout.
+// rg respects .gitignore by default so it doesn't need these; grep does not.
+const GREP_EXCLUDE_DIRS = [
+  "node_modules", ".git", "dist", "build", "target",
+  ".next", "__pycache__", "venv", ".venv", ".tox",
+];
+
+async function searchViaRg(identifier: string, root: string): Promise<boolean> {
+  // -F (fixed string) + -w (word regexp): identifier may contain `.`, `/`, `-`
+  // (file paths like `src/auth.ts`), so treat it as literal and word-bounded
+  // instead of feeding it as a regex pattern.
   try {
     const { stdout } = await execFileAsync(
       "rg",
-      ["--max-count=1", "--no-heading", "-l", `\\b${identifier}\\b`, root],
+      ["--max-count=1", "--no-heading", "-l", "-F", "-w", "--", identifier, root],
       { timeout: 5000 }
     );
-    rgAvailable = true;
     return stdout.trim().length > 0;
   } catch (e) {
     const err = e as ExecFileException & { code?: number | string };
-    if (err.code === "ENOENT") {
-      rgAvailable = false;
-      return null; // signal: backend missing, try fallback
-    }
-    rgAvailable = true;
     if (err.code === 1) return false; // rg ran, no match
-    return true; // other rg error → fail-open
+    return true; // unknown error → fail-open to avoid false-positive blocks
   }
 }
 
-async function searchViaGrep(identifier: string, root: string): Promise<boolean | null> {
-  // Fixed-string + word-boundary match: portable across GNU/BSD/busybox grep
-  // and avoids regex-escaping the identifier (which can contain `.`, `/`).
+async function searchViaGrep(identifier: string, root: string): Promise<boolean> {
+  // Same -F -w semantics as rg. Plus --exclude-dir to skip node_modules etc.,
+  // which grep would otherwise traverse fully and likely time out on.
+  const excludeFlags = GREP_EXCLUDE_DIRS.map((d) => `--exclude-dir=${d}`);
   try {
     const { stdout } = await execFileAsync(
       "grep",
-      ["-r", "-w", "-F", "-l", "--", identifier, root],
+      ["-r", "-w", "-F", "-l", ...excludeFlags, "--", identifier, root],
       { timeout: 5000 }
     );
-    grepAvailable = true;
     return stdout.trim().length > 0;
   } catch (e) {
     const err = e as ExecFileException & { code?: number | string };
-    if (err.code === "ENOENT") {
-      grepAvailable = false;
-      return null; // grep also missing → caller will fail-open
-    }
-    grepAvailable = true;
-    if (err.code === 1) return false; // grep ran, no match
-    return true; // other grep error → fail-open
+    if (err.code === 1) return false;
+    return true;
   }
 }
 
-async function existsInCodebase(identifier: string, root: string): Promise<boolean> {
+async function existsInCodebase(
+  identifier: string,
+  root: string,
+  backend: Backend,
+): Promise<boolean> {
   // Fast path: if it looks like a file path, check the filesystem directly
   if (/[./]/.test(identifier)) {
     if (existsSync(identifier)) return true;
     if (existsSync(`${root}/${identifier}`)) return true;
-    // Fall through to grep/rg for relative paths that might be in subdirs
+    // Fall through to a content search for relative paths that might be in subdirs
   }
 
-  if (rgAvailable !== false) {
-    const result = await searchViaRg(identifier, root);
-    if (result !== null) return result;
-  }
-
-  if (grepAvailable !== false) {
-    const result = await searchViaGrep(identifier, root);
-    if (result !== null) return result;
-  }
+  if (backend === "rg")   return searchViaRg(identifier, root);
+  if (backend === "grep") return searchViaGrep(identifier, root);
 
   // Neither rg nor grep is available — fail-open to avoid false-positive blocks.
   return true;
@@ -215,11 +227,12 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Verify all claims in parallel
+  // Probe once to choose backend, then verify all claims in parallel against it.
+  const backend = await detectBackend();
   const checks = await Promise.all(
     claims.map(async (id) => ({
       id,
-      found: await existsInCodebase(id, root),
+      found: await existsInCodebase(id, root, backend),
     }))
   );
 
