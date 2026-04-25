@@ -93,8 +93,10 @@ async function main(): Promise<void> {
   saveState(state);
 
   if (sessionCount >= effectiveThreshold) {
-    // Write to persistent memory so future sessions know this pattern is risky
-    const mem = memory ?? loadMemory();
+    // Write to persistent memory so future sessions know this pattern is risky.
+    // memory is guaranteed non-null here: entering this branch implies
+    // sessionCount >= baseThreshold - 1, which is exactly the couldFire condition above.
+    const mem = memory!;
     mem.loopPatterns[hash] = {
       preview,
       count: (knownBad?.count ?? 0) + 1,

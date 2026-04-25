@@ -363,7 +363,7 @@ function cleanMemory(): void {
     Object.keys(m.loopPatterns).length + Object.keys(m.editErrors).length;
   const beforeCount = count(before);
   const afterCount  = count(after);
-  saveMemory(before);
+  saveMemory(after);
   console.log(
     `\n\x1b[1m GROUNDED MEMORY CLEANUP\x1b[0m\n\n` +
     `  Before:  ${beforeCount} entries\n` +
