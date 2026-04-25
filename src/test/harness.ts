@@ -152,7 +152,11 @@ test("approves write to ~/.claude (always allowed)", () => {
 
 test("warns (not blocks) for out-of-scope path in warn mode", () => {
   writeState("sg6", emptyState({ projectRoot: TMP }));
-  const outside = join(tmpdir(), "other-project-xyz-abc", "file.ts");
+  // Must be outside ALWAYS_ALLOWED in scope-guard.ts: /tmp, /private/tmp,
+  // ~/.claude, ~/Desktop. tmpdir() resolves to /tmp on Linux which is
+  // always-allowed, so the path needs to be on a synthetic root that no
+  // platform considers allowed.
+  const outside = "/opt/grounded-test-out-of-scope/file.ts";
   const r = runHook("scope-guard", {
     tool_name: "Write", tool_input: { file_path: outside },
   }, "sg6");
