@@ -517,7 +517,9 @@ Create `.grounded.json` in your project root or `~/.grounded.json` globally. Pro
 - `"warn"` (default) — allows the edit but injects a warning
 - `"block"` — hard blocks any edit outside the project root
 
-**`editGuard.requireReadBeforeEdit`** — when `true`, any edit to an existing file requires a prior `Read` in the same session. Default `false`.
+**`editGuard.requireReadBeforeEdit`** — when `true`, any edit to an **existing** file requires a prior `Read` in the same session. Default `false`.
+
+> ⚠️ This setting only applies to files that already exist on disk. Creating a brand-new file via `Write` (or `Edit`/`MultiEdit` on a path that does not yet exist) is always allowed — there is nothing to read. The `old_string` verification (gate 2) and `confidence-check` still cover the case where the model invents a path or claims a non-existent identifier.
 
 **`scopeGuard.extraAllowedRoots`** — additional paths outside the project root where writes are allowed. Note: `~/.claude` and `~/Desktop` are always allowed unconditionally.
 
@@ -534,6 +536,16 @@ Fast, ephemeral. Tracks files read, tool call log, recent tool sequence, score, 
 
 **Persistent memory** — `.claude/grounded-memory.json` (project) or `~/.claude/grounded-memory.json` (global)  
 Survives reboots. Records loop patterns with occurrence counts so the system escalates faster on known-bad patterns in future sessions.
+
+Memory is auto-pruned on every write to keep the file bounded:
+- entries older than **30 days** are dropped (TTL)
+- at most **500 entries** are kept per category (cap, most-recent first)
+
+Override via env vars: `GROUNDED_MEMORY_TTL_DAYS`, `GROUNDED_MEMORY_MAX_ENTRIES`.  
+Force a manual cleanup: `grounded memory --clean`.
+
+**Hook crash log** — `~/.claude/grounded-errors.log` (override with `GROUNDED_ERROR_LOG`)  
+Any uncaught error in a hook is logged here as JSONL and the hook fails open (Claude Code never sees a crashed hook). Rotates automatically when the file exceeds 256 KB.
 
 ---
 
