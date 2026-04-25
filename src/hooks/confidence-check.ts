@@ -15,7 +15,7 @@ import { execFile, ExecFileException } from "child_process";
 import { existsSync } from "fs";
 import { promisify } from "util";
 import { logDecision, loadState } from "../state.js";
-import { findProjectRoot, readStdin } from "../utils.js";
+import { findProjectRoot, readStdin, superviseHook } from "../utils.js";
 import { recordEvent } from "../scoring.js";
 
 const execFileAsync = promisify(execFile);
@@ -80,30 +80,77 @@ function extractClaims(text: string): string[] {
 }
 
 // ─── Codebase verification ────────────────────────────────────────────────────
+// Tri-state cache: null = untested, true = available, false = missing.
+// Memoised across calls within the same hook invocation to avoid repeated ENOENTs
+// when verifying many identifiers in parallel.
 
-async function existsInCodebase(identifier: string, root: string): Promise<boolean> {
-  // Fast path: if it looks like a file path, check the filesystem directly
-  if (/[./]/.test(identifier)) {
-    if (existsSync(identifier)) return true;
-    if (existsSync(`${root}/${identifier}`)) return true;
-    // Fall through to rg for relative paths that might be in subdirs
-  }
+let rgAvailable: boolean | null = null;
+let grepAvailable: boolean | null = null;
 
-  // Use rg with word-boundary match, bail on first hit for speed
+async function searchViaRg(identifier: string, root: string): Promise<boolean | null> {
   try {
     const { stdout } = await execFileAsync(
       "rg",
       ["--max-count=1", "--no-heading", "-l", `\\b${identifier}\\b`, root],
       { timeout: 5000 }
     );
+    rgAvailable = true;
     return stdout.trim().length > 0;
   } catch (e) {
-    const err = e as ExecFileException & { code?: number };
-    // rg exits 1 = no match, 2 = error
-    if (err.code === 1) return false;
-    // On rg error, assume it exists to avoid false-positive blocks
-    return true;
+    const err = e as ExecFileException & { code?: number | string };
+    if (err.code === "ENOENT") {
+      rgAvailable = false;
+      return null; // signal: backend missing, try fallback
+    }
+    rgAvailable = true;
+    if (err.code === 1) return false; // rg ran, no match
+    return true; // other rg error → fail-open
   }
+}
+
+async function searchViaGrep(identifier: string, root: string): Promise<boolean | null> {
+  // Fixed-string + word-boundary match: portable across GNU/BSD/busybox grep
+  // and avoids regex-escaping the identifier (which can contain `.`, `/`).
+  try {
+    const { stdout } = await execFileAsync(
+      "grep",
+      ["-r", "-w", "-F", "-l", "--", identifier, root],
+      { timeout: 5000 }
+    );
+    grepAvailable = true;
+    return stdout.trim().length > 0;
+  } catch (e) {
+    const err = e as ExecFileException & { code?: number | string };
+    if (err.code === "ENOENT") {
+      grepAvailable = false;
+      return null; // grep also missing → caller will fail-open
+    }
+    grepAvailable = true;
+    if (err.code === 1) return false; // grep ran, no match
+    return true; // other grep error → fail-open
+  }
+}
+
+async function existsInCodebase(identifier: string, root: string): Promise<boolean> {
+  // Fast path: if it looks like a file path, check the filesystem directly
+  if (/[./]/.test(identifier)) {
+    if (existsSync(identifier)) return true;
+    if (existsSync(`${root}/${identifier}`)) return true;
+    // Fall through to grep/rg for relative paths that might be in subdirs
+  }
+
+  if (rgAvailable !== false) {
+    const result = await searchViaRg(identifier, root);
+    if (result !== null) return result;
+  }
+
+  if (grepAvailable !== false) {
+    const result = await searchViaGrep(identifier, root);
+    if (result !== null) return result;
+  }
+
+  // Neither rg nor grep is available — fail-open to avoid false-positive blocks.
+  return true;
 }
 
 // ─── Extract last assistant text from transcript ──────────────────────────────
@@ -204,7 +251,4 @@ async function main(): Promise<void> {
   );
 }
 
-main().catch(() => {
-  // On unexpected error, never block — just approve
-  process.stdout.write(JSON.stringify({ decision: "approve" }));
-});
+superviseHook("confidence-check", main);
