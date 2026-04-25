@@ -10,7 +10,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join, resolve, dirname } from "path";
-import { loadMemory } from "../state.js";
+import { loadMemory, saveMemory } from "../state.js";
 import { findProjectRoot } from "../utils.js";
 import { getBehaviorLevel, getMentalState } from "../scoring.js";
 
@@ -356,6 +356,23 @@ function showMemory(): void {
   }
 }
 
+function cleanMemory(): void {
+  const before = loadMemory();
+  const beforeCount = Object.keys(before.loopPatterns).length + Object.keys(before.editErrors).length;
+  saveMemory(before); // saveMemory prunes by TTL + cap before write
+  const after = loadMemory();
+  const afterCount = Object.keys(after.loopPatterns).length + Object.keys(after.editErrors).length;
+  const removed = beforeCount - afterCount;
+  console.log(
+    `\n\x1b[1m GROUNDED MEMORY CLEANUP\x1b[0m\n\n` +
+    `  Before:  ${beforeCount} entries\n` +
+    `  After:   ${afterCount} entries\n` +
+    `  Removed: ${removed}\n\n` +
+    `  ${DIM}TTL: ${process.env.GROUNDED_MEMORY_TTL_DAYS ?? 30} days  |  ` +
+    `Cap: ${process.env.GROUNDED_MEMORY_MAX_ENTRIES ?? 500} entries${RESET}\n`
+  );
+}
+
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2);
@@ -368,7 +385,10 @@ if (args.includes("--auto")) {
     case "uninstall": uninstall(); break;
     case "status":    status();    break;
     case "trace":     trace(Number(args[1]) || 50); break;
-    case "memory":    showMemory(); break;
+    case "memory":
+      if (args[1] === "--clean") cleanMemory();
+      else showMemory();
+      break;
     case "score":     showScore(); break;
     case "explain":   explain();   break;
     default:          install(false); break;

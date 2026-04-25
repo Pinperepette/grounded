@@ -371,6 +371,70 @@ test("injects LOOP warning at threshold (3rd identical call)", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// memory pruning (TTL + cap)
+// ─────────────────────────────────────────────────────────────────────────────
+console.log(`\n${BOLD}memory${RESET}`);
+
+function runMemoryScript(script: string, env: Record<string, string>): string {
+  const result = spawnSync("node", ["-e", script], {
+    encoding: "utf-8",
+    env:      { ...process.env, ...env },
+  });
+  if (result.status !== 0) {
+    throw new Error(`script failed: ${result.stderr}`);
+  }
+  return result.stdout;
+}
+
+test("saveMemory drops entries older than TTL", () => {
+  const memFile = join(TMP, `mem-ttl-${Date.now()}.json`);
+  const oldTs = Date.now() - 1000 * 60 * 60 * 24 * 60; // 60 days ago
+  const newTs = Date.now() - 1000 * 60 * 60;           // 1 hour ago
+  writeFileSync(memFile, JSON.stringify({
+    version: 2,
+    loopPatterns: {
+      old: { preview: "old(...)", count: 1, lastSeen: oldTs },
+      fresh: { preview: "fresh(...)", count: 5, lastSeen: newTs },
+    },
+    editErrors: {},
+  }));
+
+  // Trigger save (which prunes) via a one-liner
+  const stdout = runMemoryScript(
+    `const {loadMemory, saveMemory} = require("${resolve("dist/state.js")}");
+     const m = loadMemory(); saveMemory(m);
+     console.log(JSON.stringify(loadMemory()));`,
+    { GROUNDED_MEMORY_FILE: memFile, GROUNDED_MEMORY_TTL_DAYS: "30" },
+  );
+
+  const after = JSON.parse(stdout) as { loopPatterns: Record<string, unknown> };
+  ok(after.loopPatterns["fresh"] !== undefined, "fresh entry survives TTL");
+  ok(after.loopPatterns["old"]   === undefined, "old entry pruned by TTL");
+});
+
+test("saveMemory caps total entries at GROUNDED_MEMORY_MAX_ENTRIES", () => {
+  const memFile = join(TMP, `mem-cap-${Date.now()}.json`);
+  const now = Date.now();
+  const loopPatterns: Record<string, unknown> = {};
+  for (let i = 0; i < 20; i++) {
+    loopPatterns[`k${i}`] = { preview: `k${i}`, count: 1, lastSeen: now - i * 1000 };
+  }
+  writeFileSync(memFile, JSON.stringify({ version: 2, loopPatterns, editErrors: {} }));
+
+  const stdout = runMemoryScript(
+    `const {loadMemory, saveMemory} = require("${resolve("dist/state.js")}");
+     const m = loadMemory(); saveMemory(m);
+     console.log(JSON.stringify(loadMemory()));`,
+    { GROUNDED_MEMORY_FILE: memFile, GROUNDED_MEMORY_MAX_ENTRIES: "5" },
+  );
+
+  const after = JSON.parse(stdout) as { loopPatterns: Record<string, unknown> };
+  eq(Object.keys(after.loopPatterns).length, 5, "kept exactly the cap");
+  ok(after.loopPatterns["k0"] !== undefined, "most recent kept");
+  ok(after.loopPatterns["k19"] === undefined, "oldest dropped");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // supervisor (fail-open contract)
 // ─────────────────────────────────────────────────────────────────────────────
 console.log(`\n${BOLD}supervisor${RESET}`);
