@@ -1,0 +1,108 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/pinperepette/grounded/main/schemas/grounded.schema.json",
+  "title": "grounded configuration",
+  "description": "Configuration for grounded — Claude Code hooks that enforce tool usage and prevent hallucinations. All fields are optional; missing keys fall back to package defaults.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema reference (enables editor autocomplete and validation)."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["safe", "strict", "autonomous", "silent"],
+      "default": "safe",
+      "description": "Global enforcement mode.\n• safe — adaptive thresholds via scoring engine (default)\n• strict — scope warnings become blocks, freshness always blocks\n• autonomous — loop threshold = 1, all checks hard-block\n• silent — zero context injection, only hard blocks (production agents)"
+    },
+    "hooks": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-hook on/off toggles. Note: anti-bypass and policy-guard are always on and not configurable here.",
+      "properties": {
+        "promptInject":    { "type": "boolean", "default": true, "description": "Inject enforcement rules + CLAUDE.md snippet on UserPromptSubmit." },
+        "preFlight":       { "type": "boolean", "default": true, "description": "Detect intent and inject required tool sequence plan." },
+        "editGuard":       { "type": "boolean", "default": true, "description": "Read-before-edit gate + old_string verification on Edit/Write/MultiEdit." },
+        "readTracker":     { "type": "boolean", "default": true, "description": "Track Read/Grep/Glob calls to feed sequence-aware checks." },
+        "loopDetector":    { "type": "boolean", "default": true, "description": "Detect repeated tool+input hashes; persistent cross-session memory." },
+        "scopeGuard":      { "type": "boolean", "default": true, "description": "Block sensitive files, system paths, and out-of-project writes." },
+        "freshnessCheck":  { "type": "boolean", "default": true, "description": "Block edits when file mtime is newer than last Read timestamp." },
+        "confidenceCheck": { "type": "boolean", "default": true, "description": "Verify identifiers claimed in the final response actually exist (rg/grep)." },
+        "truthLayer":      { "type": "boolean", "default": true, "description": "Inject explicit \"X does NOT exist\" facts when Grep returns empty." }
+      }
+    },
+    "loopDetector": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "threshold":  { "type": "integer", "minimum": 1, "default": 3, "description": "Number of identical tool+input calls before a loop is flagged." },
+        "windowSize": { "type": "integer", "minimum": 1, "default": 10, "description": "How many recent calls are kept for hash-based comparison." }
+      }
+    },
+    "freshnessCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxAgeMs": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 300000,
+          "description": "Max staleness (ms) of the last Read before an edit is treated as stale. Default 5 minutes."
+        }
+      }
+    },
+    "editGuard": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requireReadBeforeEdit": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, block Edit/MultiEdit on files that were not previously read in this session. Does NOT apply to Write on new files (creating a new file never requires a prior Read)."
+        }
+      }
+    },
+    "scopeGuard": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["warn", "block"],
+          "default": "warn",
+          "description": "warn — show warning but allow; block — hard-block out-of-scope writes. Sensitive files (.env, *.key) and system paths are ALWAYS hard-blocked regardless of this setting."
+        },
+        "extraAllowedRoots": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Additional absolute paths considered in-scope for writes (e.g. shared scratch dirs)."
+        },
+        "blockedPaths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["/etc", "/usr", "/bin", "/sbin", "/System", "/Windows"],
+          "description": "Path prefixes that are always blocked from edits/writes."
+        }
+      }
+    },
+    "policies": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "noEdit": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Path substrings or globs that may never be edited (e.g. \"vendor/\", \"*.lock\")."
+        },
+        "requireTestRead": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, require reading a test file in the same module before editing implementation code."
+        }
+      }
+    }
+  }
+}

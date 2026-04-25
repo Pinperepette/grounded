@@ -12,7 +12,7 @@ import { existsSync } from "fs";
 import { basename, join, resolve } from "path";
 import { loadConfig } from "../config.js";
 import { loadState, saveState, logDecision } from "../state.js";
-import { approve, block, findProjectRoot, isPathUnder, readStdin } from "../utils.js";
+import { approve, block, findProjectRoot, isPathUnder, readStdin, superviseHook } from "../utils.js";
 import { recordEvent, getSessionScore } from "../scoring.js";
 
 // Sensitive file patterns — matched against the basename
@@ -136,4 +136,4 @@ async function main(): Promise<void> {
   approve();
 }
 
-main().catch(() => process.exit(1));
+superviseHook("scope-guard", main);

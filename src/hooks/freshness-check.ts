@@ -8,7 +8,7 @@ import { existsSync, statSync } from "fs";
 import { resolve } from "path";
 import { loadState, logDecision } from "../state.js";
 import { loadConfig } from "../config.js";
-import { readStdin } from "../utils.js";
+import { readStdin, superviseHook } from "../utils.js";
 import { recordEvent, getSessionScore } from "../scoring.js";
 
 function extractTarget(tool: string, inp: Record<string, unknown>): string {
@@ -83,4 +83,4 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(() => process.exit(1));
+superviseHook("freshness-check", main);

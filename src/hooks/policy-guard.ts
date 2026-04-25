@@ -13,7 +13,7 @@
 import { resolve } from "path";
 import { loadConfig } from "../config.js";
 import { loadState, logDecision } from "../state.js";
-import { block, approve, readStdin } from "../utils.js";
+import { block, approve, readStdin, superviseHook } from "../utils.js";
 import { recordEvent } from "../scoring.js";
 
 function extractTargets(tool: string, inp: Record<string, unknown>): string[] {
@@ -89,4 +89,4 @@ async function main(): Promise<void> {
   approve();
 }
 
-main().catch(() => process.exit(1));
+superviseHook("policy-guard", main);

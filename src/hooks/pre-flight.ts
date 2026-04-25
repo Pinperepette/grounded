@@ -8,7 +8,7 @@
  *
  * Goal: prevent errors by planning, not just correcting after they happen.
  */
-import { findProjectRoot, readStdin } from "../utils.js";
+import { findProjectRoot, postOk, readStdin, superviseHook } from "../utils.js";
 import { getMentalState } from "../scoring.js";
 
 // ─── Intent detection ─────────────────────────────────────────────────────────
@@ -181,4 +181,4 @@ async function main(): Promise<void> {
   );
 }
 
-main().catch(() => process.exit(1));
+superviseHook("pre-flight", main, postOk);

@@ -14,7 +14,7 @@
  * - Pattern too generic (< 3 chars) → penalize
  */
 import { loadState, logDecision } from "../state.js";
-import { readStdin } from "../utils.js";
+import { readStdin, superviseHook } from "../utils.js";
 import { recordEvent } from "../scoring.js";
 import { loadConfig } from "../config.js";
 
@@ -112,4 +112,4 @@ async function main(): Promise<void> {
   }));
 }
 
-main().catch(() => process.exit(1));
+superviseHook("anti-bypass", main);

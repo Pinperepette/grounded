@@ -152,7 +152,11 @@ test("approves write to ~/.claude (always allowed)", () => {
 
 test("warns (not blocks) for out-of-scope path in warn mode", () => {
   writeState("sg6", emptyState({ projectRoot: TMP }));
-  const outside = join(tmpdir(), "other-project-xyz-abc", "file.ts");
+  // Must be outside ALWAYS_ALLOWED in scope-guard.ts: /tmp, /private/tmp,
+  // ~/.claude, ~/Desktop. tmpdir() resolves to /tmp on Linux which is
+  // always-allowed, so the path needs to be on a synthetic root that no
+  // platform considers allowed.
+  const outside = "/opt/grounded-test-out-of-scope/file.ts";
   const r = runHook("scope-guard", {
     tool_name: "Write", tool_input: { file_path: outside },
   }, "sg6");
@@ -368,6 +372,228 @@ test("injects LOOP warning at threshold (3rd identical call)", () => {
   ok(r.hookSpecificOutput !== undefined, "should inject LOOP warning");
   const prompt = (r.hookSpecificOutput?.["additionalSystemPrompt"] as string) ?? "";
   ok(/loop/i.test(prompt), "prompt should mention loop");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// confidence-check (Stop hook: hallucination detection on real codebase)
+// ─────────────────────────────────────────────────────────────────────────────
+console.log(`\n${BOLD}confidence-check${RESET}`);
+
+// Build a tiny isolated codebase. Each test gets its own root so the
+// project-root walk doesn't leak into the grounded repo itself.
+function makeFixtureCodebase(): string {
+  const dir = mkdtempSync(join(tmpdir(), "grounded-cc-"));
+  // Marker file so findProjectRoot stops walking here.
+  writeFileSync(join(dir, ".git"), "");
+  writeFileSync(join(dir, "auth.ts"), [
+    "export function verifyUser(token: string): boolean {",
+    "  return token.length > 0;",
+    "}",
+  ].join("\n"));
+  writeFileSync(join(dir, "utils.ts"), [
+    "export function makeId(): string { return 'id'; }",
+  ].join("\n"));
+  return dir;
+}
+
+function runConfidenceCheck(transcriptText: string, root: string, stateId: string): HookOutput {
+  const result = spawnSync("node", [join(HOOKS_DIR, "confidence-check.js")], {
+    input: JSON.stringify({
+      transcript: [{ role: "assistant", content: transcriptText }],
+    }),
+    cwd: root, // makes findProjectRoot land on this fixture, not the real repo
+    env: { ...process.env, GROUNDED_STATE_FILE: stateFile(stateId) },
+    encoding: "utf-8",
+    timeout: 8000,
+  });
+  try {
+    const p = JSON.parse(result.stdout) as Record<string, unknown>;
+    return {
+      decision:           p["decision"] as string | undefined,
+      continue:           p["continue"] as boolean | undefined,
+      hookSpecificOutput: p["hookSpecificOutput"] as Record<string, unknown> | undefined,
+      raw:                result.stdout,
+    };
+  } catch {
+    return { raw: `stdout: ${result.stdout}\nstderr: ${result.stderr}` };
+  }
+}
+
+test("approves response with no claims to verify", () => {
+  const root = makeFixtureCodebase();
+  writeState("cc1", emptyState());
+  const r = runConfidenceCheck("Done. The change is complete.", root, "cc1");
+  eq(r.decision, "approve", "decision");
+});
+
+test("approves response when all claimed identifiers exist", () => {
+  const root = makeFixtureCodebase();
+  writeState("cc2", emptyState());
+  const r = runConfidenceCheck(
+    "I called the `verifyUser` function and used the `makeId` helper.",
+    root, "cc2",
+  );
+  eq(r.decision, "approve", "decision");
+});
+
+test("blocks response containing a hallucinated identifier", () => {
+  const root = makeFixtureCodebase();
+  writeState("cc3", emptyState());
+  const r = runConfidenceCheck(
+    "The `parseToken` function in `auth.ts` handles validation.",
+    root, "cc3",
+  );
+  eq(r.decision, "block", "decision");
+  ok(r.raw.includes("parseToken"), "block reason should name the hallucinated identifier");
+});
+
+test("approves on second fire (stop_hook_active=true) to avoid infinite loop", () => {
+  const root = makeFixtureCodebase();
+  writeState("cc4", emptyState());
+  const result = spawnSync("node", [join(HOOKS_DIR, "confidence-check.js")], {
+    input: JSON.stringify({
+      stop_hook_active: true,
+      transcript: [{ role: "assistant", content: "The `parseToken` function exists." }],
+    }),
+    cwd: root,
+    env: { ...process.env, GROUNDED_STATE_FILE: stateFile("cc4") },
+    encoding: "utf-8",
+  });
+  const parsed = JSON.parse(result.stdout) as { decision?: string };
+  eq(parsed.decision, "approve", "second fire must approve unconditionally");
+});
+
+test("approves identifiers that exist as files even when not in code", () => {
+  const root = makeFixtureCodebase();
+  writeState("cc5", emptyState());
+  // `auth.ts` exists as a file in the fixture — fast path should catch it.
+  const r = runConfidenceCheck(
+    "Edited `auth.ts` to add the new check.",
+    root, "cc5",
+  );
+  eq(r.decision, "approve", "decision");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// memory pruning (TTL + cap)
+// ─────────────────────────────────────────────────────────────────────────────
+console.log(`\n${BOLD}memory${RESET}`);
+
+function runMemoryScript(script: string, env: Record<string, string>): string {
+  const result = spawnSync("node", ["-e", script], {
+    encoding: "utf-8",
+    env:      { ...process.env, ...env },
+  });
+  if (result.status !== 0) {
+    throw new Error(`script failed: ${result.stderr}`);
+  }
+  return result.stdout;
+}
+
+test("saveMemory drops entries older than TTL", () => {
+  const memFile = join(TMP, `mem-ttl-${Date.now()}.json`);
+  const oldTs = Date.now() - 1000 * 60 * 60 * 24 * 60; // 60 days ago
+  const newTs = Date.now() - 1000 * 60 * 60;           // 1 hour ago
+  writeFileSync(memFile, JSON.stringify({
+    version: 2,
+    loopPatterns: {
+      old: { preview: "old(...)", count: 1, lastSeen: oldTs },
+      fresh: { preview: "fresh(...)", count: 5, lastSeen: newTs },
+    },
+    editErrors: {},
+  }));
+
+  // Trigger save (which prunes) via a one-liner
+  const stdout = runMemoryScript(
+    `const {loadMemory, saveMemory} = require("${resolve("dist/state.js")}");
+     const m = loadMemory(); saveMemory(m);
+     console.log(JSON.stringify(loadMemory()));`,
+    { GROUNDED_MEMORY_FILE: memFile, GROUNDED_MEMORY_TTL_DAYS: "30" },
+  );
+
+  const after = JSON.parse(stdout) as { loopPatterns: Record<string, unknown> };
+  ok(after.loopPatterns["fresh"] !== undefined, "fresh entry survives TTL");
+  ok(after.loopPatterns["old"]   === undefined, "old entry pruned by TTL");
+});
+
+test("saveMemory caps total entries at GROUNDED_MEMORY_MAX_ENTRIES", () => {
+  const memFile = join(TMP, `mem-cap-${Date.now()}.json`);
+  const now = Date.now();
+  const loopPatterns: Record<string, unknown> = {};
+  for (let i = 0; i < 20; i++) {
+    loopPatterns[`k${i}`] = { preview: `k${i}`, count: 1, lastSeen: now - i * 1000 };
+  }
+  writeFileSync(memFile, JSON.stringify({ version: 2, loopPatterns, editErrors: {} }));
+
+  const stdout = runMemoryScript(
+    `const {loadMemory, saveMemory} = require("${resolve("dist/state.js")}");
+     const m = loadMemory(); saveMemory(m);
+     console.log(JSON.stringify(loadMemory()));`,
+    { GROUNDED_MEMORY_FILE: memFile, GROUNDED_MEMORY_MAX_ENTRIES: "5" },
+  );
+
+  const after = JSON.parse(stdout) as { loopPatterns: Record<string, unknown> };
+  eq(Object.keys(after.loopPatterns).length, 5, "kept exactly the cap");
+  ok(after.loopPatterns["k0"] !== undefined, "most recent kept");
+  ok(after.loopPatterns["k19"] === undefined, "oldest dropped");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// supervisor (fail-open contract)
+// ─────────────────────────────────────────────────────────────────────────────
+console.log(`\n${BOLD}supervisor${RESET}`);
+
+function runHookRaw(hook: string, rawInput: string, errorLog?: string): {
+  exitCode: number; stdout: string; stderr: string;
+} {
+  const result = spawnSync("node", [join(HOOKS_DIR, `${hook}.js`)], {
+    input:    rawInput,
+    env:      {
+      ...process.env,
+      GROUNDED_STATE_FILE: stateFile("sup"),
+      ...(errorLog ? { GROUNDED_ERROR_LOG: errorLog } : {}),
+    },
+    encoding: "utf-8",
+    timeout:  8000,
+  });
+  return {
+    exitCode: result.status ?? -1,
+    stdout:   result.stdout,
+    stderr:   result.stderr,
+  };
+}
+
+test("PreToolUse hook fails open with approve on malformed JSON input", () => {
+  writeState("sup", emptyState());
+  const r = runHookRaw("anti-bypass", "{not valid json");
+  eq(r.exitCode, 0, "exit code (must be 0 — non-zero may be surfaced as block)");
+  const parsed = JSON.parse(r.stdout) as { decision?: string };
+  eq(parsed.decision, "approve", "fail-open response");
+});
+
+test("PostToolUse hook fails open with continue:true on malformed JSON input", () => {
+  writeState("sup", emptyState());
+  const r = runHookRaw("read-tracker", "garbage~~");
+  eq(r.exitCode, 0, "exit code");
+  const parsed = JSON.parse(r.stdout) as { continue?: boolean };
+  eq(parsed.continue, true, "fail-open response");
+});
+
+test("Stop hook fails open with approve on malformed JSON input", () => {
+  writeState("sup", emptyState());
+  const r = runHookRaw("confidence-check", "}}}");
+  eq(r.exitCode, 0, "exit code");
+  const parsed = JSON.parse(r.stdout) as { decision?: string };
+  eq(parsed.decision, "approve", "fail-open response");
+});
+
+test("supervisor logs the crash to GROUNDED_ERROR_LOG", () => {
+  writeState("sup", emptyState());
+  const logPath = join(TMP, "errors.log");
+  runHookRaw("anti-bypass", "<<not json>>", logPath);
+  const log = readFileSync(logPath, "utf-8");
+  ok(log.includes("anti-bypass"), "error log should record hook name");
+  ok(/JSON|Unexpected/i.test(log), "error log should describe parse failure");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

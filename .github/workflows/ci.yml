@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: test (Node ${{ matrix.node }} on ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: ['18', '20', '22']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies (skip postinstall hook auto-registration)
+        run: npm ci --ignore-scripts
+
+      - name: Type-check & build
+        run: npm run build
+
+      - name: Run test harness
+        run: node dist/test/harness.js
+
+      - name: Verify CLI binary launches
+        # `status` is a read-only command — never writes to ~/.claude/settings.json.
+        run: node dist/bin/install.js status
+
+  schema:
+    name: validate JSON schema
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Validate schema is well-formed JSON Schema draft-07
+        run: |
+          npx --yes ajv-cli@5 compile -s schemas/grounded.schema.json --spec=draft7
+
+      - name: Validate .grounded.json against the schema
+        run: |
+          npx --yes ajv-cli@5 validate -s schemas/grounded.schema.json -d .grounded.json --spec=draft7

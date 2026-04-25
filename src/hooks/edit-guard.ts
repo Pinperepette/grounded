@@ -13,7 +13,7 @@
 import { existsSync, readFileSync } from "fs";
 import { resolve } from "path";
 import { loadState, logDecision } from "../state.js";
-import { blockWithHint, approve, readStdin } from "../utils.js";
+import { blockWithHint, approve, readStdin, superviseHook } from "../utils.js";
 import { loadConfig } from "../config.js";
 import { recordEvent, getSessionScore } from "../scoring.js";
 
@@ -57,7 +57,11 @@ async function main(): Promise<void> {
 
   const target = extractTarget(data.tool_name, data.tool_input);
 
-  // New file — always allow
+  // New file — always allow.
+  // requireReadBeforeEdit deliberately does NOT apply here: there is nothing to
+  // read for a path that does not yet exist. Hallucinated paths are caught
+  // downstream by confidence-check (which verifies claimed identifiers in the
+  // final response) and by scope-guard (which blocks writes outside scope).
   if (!target || !existsSync(target)) {
     logDecision({ hook: "edit-guard", tool: data.tool_name, action: "APPROVE",
       target: target || "(new)", detail: "new file" });
@@ -125,4 +129,4 @@ async function main(): Promise<void> {
   approve();
 }
 
-main().catch(() => process.exit(1));
+superviseHook("edit-guard", main);

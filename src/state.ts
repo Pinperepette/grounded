@@ -1,6 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
-import { findProjectRoot } from "./utils.js";
+import { claudeHomeFile, findProjectRoot } from "./utils.js";
+
+// Project root never changes within a single hook process. Cache it to avoid
+// the up-the-tree existsSync walk on every loadMemory/saveMemory.
+let _cachedProjectRoot: string | null | undefined;
+function projectRoot(): string | null {
+  if (_cachedProjectRoot === undefined) _cachedProjectRoot = findProjectRoot();
+  return _cachedProjectRoot;
+}
 
 // ─── Session state (ephemeral, per Claude Code process) ───────────────────────
 
@@ -113,9 +121,10 @@ export interface PersistentMemory {
 }
 
 function memoryPath(): string {
-  const root = findProjectRoot();
+  if (process.env.GROUNDED_MEMORY_FILE) return process.env.GROUNDED_MEMORY_FILE;
+  const root = projectRoot();
   if (root) return join(root, ".claude", "grounded-memory.json");
-  return join(process.env.HOME ?? "/tmp", ".claude", "grounded-memory.json");
+  return claudeHomeFile("grounded-memory.json");
 }
 
 function emptyMemory(): PersistentMemory {
@@ -131,8 +140,62 @@ export function loadMemory(): PersistentMemory {
   }
 }
 
+// ─── Memory pruning ───────────────────────────────────────────────────────────
+// Persistent memory accumulates loop patterns across sessions. Without bounds,
+// the file grows forever. We apply two policies on every save:
+//   1. TTL: drop entries whose lastSeen is older than N days (default 30)
+//   2. Cap: keep only the N most-recent entries per category (default 500)
+// Both are tuneable via env vars to support tests and unusual setups.
+
+function memoryTtlMs(): number {
+  const days = Number(process.env.GROUNDED_MEMORY_TTL_DAYS ?? 30);
+  return Number.isFinite(days) && days > 0 ? days * 24 * 60 * 60 * 1000 : Infinity;
+}
+
+function memoryMaxEntries(): number {
+  const n = Number(process.env.GROUNDED_MEMORY_MAX_ENTRIES ?? 500);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : Infinity;
+}
+
+function pruneRecords<T extends { lastSeen: number }>(
+  records: Record<string, T>,
+  cutoff: number,
+  cap: number,
+): Record<string, T> {
+  // Steady state: nothing expired and we're under cap → return same reference.
+  // Avoids rebuilding the whole map on every loop-detector save.
+  const keys = Object.keys(records);
+  if (keys.length <= cap) {
+    let allFresh = true;
+    for (const k of keys) {
+      if (records[k].lastSeen <= cutoff) { allFresh = false; break; }
+    }
+    if (allFresh) return records;
+  }
+  let entries = Object.entries(records).filter(([, r]) => r.lastSeen > cutoff);
+  if (entries.length > cap) {
+    entries.sort(([, a], [, b]) => b.lastSeen - a.lastSeen);
+    entries = entries.slice(0, cap);
+  }
+  return Object.fromEntries(entries) as Record<string, T>;
+}
+
+export function pruneMemory(mem: PersistentMemory): PersistentMemory {
+  const cutoff = Date.now() - memoryTtlMs();
+  const cap = memoryMaxEntries();
+  // Spread mem so future fields are preserved across prunes; don't hard-code version.
+  return {
+    ...mem,
+    loopPatterns: pruneRecords(mem.loopPatterns, cutoff, cap),
+    editErrors:   pruneRecords(mem.editErrors,   cutoff, cap),
+  };
+}
+
 export function saveMemory(mem: PersistentMemory): void {
+  const pruned = pruneMemory(mem);
   const p = memoryPath();
   mkdirSync(join(p, ".."), { recursive: true });
-  writeFileSync(p, JSON.stringify(mem, null, 2));
+  // No pretty-printing: this file is consumed by tools, not read by humans.
+  // Doubles write speed and halves disk size at the cap.
+  writeFileSync(p, JSON.stringify(pruned));
 }

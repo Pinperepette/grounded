@@ -15,7 +15,7 @@ import { execFile, ExecFileException } from "child_process";
 import { existsSync } from "fs";
 import { promisify } from "util";
 import { logDecision, loadState } from "../state.js";
-import { findProjectRoot, readStdin } from "../utils.js";
+import { findProjectRoot, readStdin, superviseHook } from "../utils.js";
 import { recordEvent } from "../scoring.js";
 
 const execFileAsync = promisify(execFile);
@@ -81,29 +81,79 @@ function extractClaims(text: string): string[] {
 
 // ─── Codebase verification ────────────────────────────────────────────────────
 
-async function existsInCodebase(identifier: string, root: string): Promise<boolean> {
-  // Fast path: if it looks like a file path, check the filesystem directly
-  if (/[./]/.test(identifier)) {
-    if (existsSync(identifier)) return true;
-    if (existsSync(`${root}/${identifier}`)) return true;
-    // Fall through to rg for relative paths that might be in subdirs
-  }
+type Backend = "rg" | "grep" | "none";
 
-  // Use rg with word-boundary match, bail on first hit for speed
+// Probe each backend ONCE before the parallel verification fan-out, so we
+// don't spawn N concurrent rg processes that all ENOENT and then spawn N more
+// grep processes on systems without ripgrep.
+async function detectBackend(): Promise<Backend> {
+  const probe = async (cmd: string): Promise<boolean> => {
+    try {
+      await execFileAsync(cmd, ["--version"], { timeout: 2000 });
+      return true;
+    } catch (e) {
+      const err = e as ExecFileException & { code?: number | string };
+      // ENOENT = command not installed; any other failure means it exists
+      // but errored out for unrelated reasons — still considered available.
+      return err.code !== "ENOENT";
+    }
+  };
+  if (await probe("rg"))   return "rg";
+  if (await probe("grep")) return "grep";
+  return "none";
+}
+
+// Directories that are useless to search and would blow the 5s timeout.
+// rg respects .gitignore by default so it doesn't need these; grep does not.
+const GREP_EXCLUDE_DIRS = [
+  "node_modules", ".git", "dist", "build", "target",
+  ".next", "__pycache__", "venv", ".venv", ".tox",
+];
+
+// Common -F -w (fixed string + word regexp) arguments per backend, factored
+// out so the actual differences between rg and grep are obvious in one place.
+const BACKEND_ARGS: Record<"rg" | "grep", () => string[]> = {
+  rg:   () => ["--max-count=1", "--no-heading", "-l", "-F", "-w", "--"],
+  grep: () => [
+    "-r", "-l", "-F", "-w",
+    ...GREP_EXCLUDE_DIRS.map((d) => `--exclude-dir=${d}`),
+    "--",
+  ],
+};
+
+async function searchVia(
+  backend: "rg" | "grep",
+  identifier: string,
+  root: string,
+): Promise<boolean> {
   try {
     const { stdout } = await execFileAsync(
-      "rg",
-      ["--max-count=1", "--no-heading", "-l", `\\b${identifier}\\b`, root],
+      backend,
+      [...BACKEND_ARGS[backend](), identifier, root],
       { timeout: 5000 }
     );
     return stdout.trim().length > 0;
   } catch (e) {
-    const err = e as ExecFileException & { code?: number };
-    // rg exits 1 = no match, 2 = error
-    if (err.code === 1) return false;
-    // On rg error, assume it exists to avoid false-positive blocks
-    return true;
+    const err = e as ExecFileException & { code?: number | string };
+    if (err.code === 1) return false; // ran, no match
+    return true; // unknown error → fail-open to avoid false-positive blocks
   }
+}
+
+async function existsInCodebase(
+  identifier: string,
+  root: string,
+  backend: Backend,
+): Promise<boolean> {
+  // Fast path: if it looks like a file path, check the filesystem directly
+  if (/[./]/.test(identifier)) {
+    if (existsSync(identifier)) return true;
+    if (existsSync(`${root}/${identifier}`)) return true;
+    // Fall through to a content search for relative paths that might be in subdirs
+  }
+
+  if (backend === "none") return true; // no search backend → fail-open
+  return searchVia(backend, identifier, root);
 }
 
 // ─── Extract last assistant text from transcript ──────────────────────────────
@@ -168,11 +218,12 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Verify all claims in parallel
+  // Probe once to choose backend, then verify all claims in parallel against it.
+  const backend = await detectBackend();
   const checks = await Promise.all(
     claims.map(async (id) => ({
       id,
-      found: await existsInCodebase(id, root),
+      found: await existsInCodebase(id, root, backend),
     }))
   );
 
@@ -204,7 +255,4 @@ async function main(): Promise<void> {
   );
 }
 
-main().catch(() => {
-  // On unexpected error, never block — just approve
-  process.stdout.write(JSON.stringify({ decision: "approve" }));
-});
+superviseHook("confidence-check", main);
