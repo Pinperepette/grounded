@@ -11,6 +11,13 @@ export function simpleHash(s: string): string {
   return (h >>> 0).toString(16);
 }
 
+// All Claude Code config/state lives under ~/.claude. Centralised so the
+// HOME-fallback and override semantics are defined in one place.
+export function claudeHomeFile(filename: string, override?: string): string {
+  if (override) return override;
+  return join(process.env.HOME ?? "/tmp", ".claude", filename);
+}
+
 const ROOT_MARKERS = [
   ".git", "package.json", "CLAUDE.md", "pyproject.toml",
   "Cargo.toml", "go.mod", "pom.xml", "build.gradle",
@@ -83,8 +90,7 @@ export function postOk(): void {
 const ERROR_LOG_MAX_BYTES = 256 * 1024;
 
 function errorLogPath(): string {
-  if (process.env.GROUNDED_ERROR_LOG) return process.env.GROUNDED_ERROR_LOG;
-  return join(process.env.HOME ?? "/tmp", ".claude", "grounded-errors.log");
+  return claudeHomeFile("grounded-errors.log", process.env.GROUNDED_ERROR_LOG);
 }
 
 export function logHookError(hookName: string, err: unknown): void {

@@ -25,9 +25,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies (skip postinstall hook auto-registration)
-        env:
-          npm_config_ignore_scripts: 'true'
-        run: npm ci || npm install --ignore-scripts
+        run: npm ci --ignore-scripts
 
       - name: Type-check & build
         run: npm run build
@@ -35,8 +33,9 @@ jobs:
       - name: Run test harness
         run: node dist/test/harness.js
 
-      - name: Verify CLI binary is executable
-        run: node dist/bin/install.js --help || node dist/bin/install.js status || true
+      - name: Verify CLI binary launches
+        # `status` is a read-only command — never writes to ~/.claude/settings.json.
+        run: node dist/bin/install.js status
 
   schema:
     name: validate JSON schema

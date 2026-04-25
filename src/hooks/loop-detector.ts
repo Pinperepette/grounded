@@ -64,7 +64,6 @@ async function main(): Promise<void> {
 
   const cfg = loadConfig();
   const state = loadState();
-  const memory = loadMemory();
   const now = Date.now();
 
   const tool = data.tool_name ?? "";
@@ -78,23 +77,30 @@ async function main(): Promise<void> {
   const window = state.toolCallLog.slice(-cfg.loopDetector.windowSize);
   const sessionCount = window.filter((c) => c.hash === hash).length;
 
-  // Use dynamic threshold from scoring engine; further drop by 1 if known-bad pattern
+  // Lazy-load memory: most PostToolUse calls are nowhere near the loop
+  // threshold, so we skip the readFileSync + JSON.parse unless we need it.
+  // We need it when (a) we're at the threshold or (b) we're one step away
+  // and the known-bad shortcut might trip the threshold early.
   const { thresholds } = getSessionScore();
-  const knownBad = memory.loopPatterns[hash];
+  const baseThreshold = thresholds.loopThreshold;
+  const couldFire = sessionCount >= baseThreshold || sessionCount + 1 >= baseThreshold;
+  const memory = couldFire ? loadMemory() : null;
+  const knownBad = memory?.loopPatterns[hash];
   const effectiveThreshold = knownBad
-    ? Math.max(1, thresholds.loopThreshold - 1)
-    : thresholds.loopThreshold;
+    ? Math.max(1, baseThreshold - 1)
+    : baseThreshold;
 
   saveState(state);
 
   if (sessionCount >= effectiveThreshold) {
     // Write to persistent memory so future sessions know this pattern is risky
-    memory.loopPatterns[hash] = {
+    const mem = memory ?? loadMemory();
+    mem.loopPatterns[hash] = {
       preview,
       count: (knownBad?.count ?? 0) + 1,
       lastSeen: now,
     };
-    saveMemory(memory);
+    saveMemory(mem);
 
     const { diagnosis, suggestion } = getRecovery(tool, inp);
     const knownBadNote = knownBad

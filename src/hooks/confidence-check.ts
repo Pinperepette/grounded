@@ -110,39 +110,33 @@ const GREP_EXCLUDE_DIRS = [
   ".next", "__pycache__", "venv", ".venv", ".tox",
 ];
 
-async function searchViaRg(identifier: string, root: string): Promise<boolean> {
-  // -F (fixed string) + -w (word regexp): identifier may contain `.`, `/`, `-`
-  // (file paths like `src/auth.ts`), so treat it as literal and word-bounded
-  // instead of feeding it as a regex pattern.
-  try {
-    const { stdout } = await execFileAsync(
-      "rg",
-      ["--max-count=1", "--no-heading", "-l", "-F", "-w", "--", identifier, root],
-      { timeout: 5000 }
-    );
-    return stdout.trim().length > 0;
-  } catch (e) {
-    const err = e as ExecFileException & { code?: number | string };
-    if (err.code === 1) return false; // rg ran, no match
-    return true; // unknown error → fail-open to avoid false-positive blocks
-  }
-}
+// Common -F -w (fixed string + word regexp) arguments per backend, factored
+// out so the actual differences between rg and grep are obvious in one place.
+const BACKEND_ARGS: Record<"rg" | "grep", () => string[]> = {
+  rg:   () => ["--max-count=1", "--no-heading", "-l", "-F", "-w", "--"],
+  grep: () => [
+    "-r", "-l", "-F", "-w",
+    ...GREP_EXCLUDE_DIRS.map((d) => `--exclude-dir=${d}`),
+    "--",
+  ],
+};
 
-async function searchViaGrep(identifier: string, root: string): Promise<boolean> {
-  // Same -F -w semantics as rg. Plus --exclude-dir to skip node_modules etc.,
-  // which grep would otherwise traverse fully and likely time out on.
-  const excludeFlags = GREP_EXCLUDE_DIRS.map((d) => `--exclude-dir=${d}`);
+async function searchVia(
+  backend: "rg" | "grep",
+  identifier: string,
+  root: string,
+): Promise<boolean> {
   try {
     const { stdout } = await execFileAsync(
-      "grep",
-      ["-r", "-w", "-F", "-l", ...excludeFlags, "--", identifier, root],
+      backend,
+      [...BACKEND_ARGS[backend](), identifier, root],
       { timeout: 5000 }
     );
     return stdout.trim().length > 0;
   } catch (e) {
     const err = e as ExecFileException & { code?: number | string };
-    if (err.code === 1) return false;
-    return true;
+    if (err.code === 1) return false; // ran, no match
+    return true; // unknown error → fail-open to avoid false-positive blocks
   }
 }
 
@@ -158,11 +152,8 @@ async function existsInCodebase(
     // Fall through to a content search for relative paths that might be in subdirs
   }
 
-  if (backend === "rg")   return searchViaRg(identifier, root);
-  if (backend === "grep") return searchViaGrep(identifier, root);
-
-  // Neither rg nor grep is available — fail-open to avoid false-positive blocks.
-  return true;
+  if (backend === "none") return true; // no search backend → fail-open
+  return searchVia(backend, identifier, root);
 }
 
 // ─── Extract last assistant text from transcript ──────────────────────────────
