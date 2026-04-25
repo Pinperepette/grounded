@@ -375,6 +375,106 @@ test("injects LOOP warning at threshold (3rd identical call)", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// confidence-check (Stop hook: hallucination detection on real codebase)
+// ─────────────────────────────────────────────────────────────────────────────
+console.log(`\n${BOLD}confidence-check${RESET}`);
+
+// Build a tiny isolated codebase. Each test gets its own root so the
+// project-root walk doesn't leak into the grounded repo itself.
+function makeFixtureCodebase(): string {
+  const dir = mkdtempSync(join(tmpdir(), "grounded-cc-"));
+  // Marker file so findProjectRoot stops walking here.
+  writeFileSync(join(dir, ".git"), "");
+  writeFileSync(join(dir, "auth.ts"), [
+    "export function verifyUser(token: string): boolean {",
+    "  return token.length > 0;",
+    "}",
+  ].join("\n"));
+  writeFileSync(join(dir, "utils.ts"), [
+    "export function makeId(): string { return 'id'; }",
+  ].join("\n"));
+  return dir;
+}
+
+function runConfidenceCheck(transcriptText: string, root: string, stateId: string): HookOutput {
+  const result = spawnSync("node", [join(HOOKS_DIR, "confidence-check.js")], {
+    input: JSON.stringify({
+      transcript: [{ role: "assistant", content: transcriptText }],
+    }),
+    cwd: root, // makes findProjectRoot land on this fixture, not the real repo
+    env: { ...process.env, GROUNDED_STATE_FILE: stateFile(stateId) },
+    encoding: "utf-8",
+    timeout: 8000,
+  });
+  try {
+    const p = JSON.parse(result.stdout) as Record<string, unknown>;
+    return {
+      decision:           p["decision"] as string | undefined,
+      continue:           p["continue"] as boolean | undefined,
+      hookSpecificOutput: p["hookSpecificOutput"] as Record<string, unknown> | undefined,
+      raw:                result.stdout,
+    };
+  } catch {
+    return { raw: `stdout: ${result.stdout}\nstderr: ${result.stderr}` };
+  }
+}
+
+test("approves response with no claims to verify", () => {
+  const root = makeFixtureCodebase();
+  writeState("cc1", emptyState());
+  const r = runConfidenceCheck("Done. The change is complete.", root, "cc1");
+  eq(r.decision, "approve", "decision");
+});
+
+test("approves response when all claimed identifiers exist", () => {
+  const root = makeFixtureCodebase();
+  writeState("cc2", emptyState());
+  const r = runConfidenceCheck(
+    "I called the `verifyUser` function and used the `makeId` helper.",
+    root, "cc2",
+  );
+  eq(r.decision, "approve", "decision");
+});
+
+test("blocks response containing a hallucinated identifier", () => {
+  const root = makeFixtureCodebase();
+  writeState("cc3", emptyState());
+  const r = runConfidenceCheck(
+    "The `parseToken` function in `auth.ts` handles validation.",
+    root, "cc3",
+  );
+  eq(r.decision, "block", "decision");
+  ok(r.raw.includes("parseToken"), "block reason should name the hallucinated identifier");
+});
+
+test("approves on second fire (stop_hook_active=true) to avoid infinite loop", () => {
+  const root = makeFixtureCodebase();
+  writeState("cc4", emptyState());
+  const result = spawnSync("node", [join(HOOKS_DIR, "confidence-check.js")], {
+    input: JSON.stringify({
+      stop_hook_active: true,
+      transcript: [{ role: "assistant", content: "The `parseToken` function exists." }],
+    }),
+    cwd: root,
+    env: { ...process.env, GROUNDED_STATE_FILE: stateFile("cc4") },
+    encoding: "utf-8",
+  });
+  const parsed = JSON.parse(result.stdout) as { decision?: string };
+  eq(parsed.decision, "approve", "second fire must approve unconditionally");
+});
+
+test("approves identifiers that exist as files even when not in code", () => {
+  const root = makeFixtureCodebase();
+  writeState("cc5", emptyState());
+  // `auth.ts` exists as a file in the fixture — fast path should catch it.
+  const r = runConfidenceCheck(
+    "Edited `auth.ts` to add the new check.",
+    root, "cc5",
+  );
+  eq(r.decision, "approve", "decision");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // memory pruning (TTL + cap)
 // ─────────────────────────────────────────────────────────────────────────────
 console.log(`\n${BOLD}memory${RESET}`);
