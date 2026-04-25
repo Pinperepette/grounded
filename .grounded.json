@@ -1,4 +1,5 @@
 {
+  "$schema": "./schemas/grounded.schema.json",
   "editGuard": {
     "requireReadBeforeEdit": false
   }
